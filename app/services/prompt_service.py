@@ -47,24 +47,43 @@ def ensure_default_prompts(db: Session) -> None:
             db.add(template)
             db.flush()
 
-        version_exists = (
+        file_content = _read_file(seed["file"])
+        active = (
             db.query(PromptVersion)
             .filter(
                 PromptVersion.template_id == template.id,
-                PromptVersion.version == seed["version"],
+                PromptVersion.is_active.is_(True),
             )
             .first()
         )
-        if version_exists is None:
-            content = _read_file(seed["file"])
+
+        if active is None:
+            version = PromptVersion(
+                template_id=template.id,
+                version=seed["version"],
+                content=file_content,
+                model_hint=seed["model_hint"],
+                temperature_hint=seed["temperature_hint"],
+                is_active=True,
+            )
+            db.add(version)
+            db.flush()
+        elif active.content != file_content:
+            latest_num = (
+                db.query(PromptVersion)
+                .filter(PromptVersion.template_id == template.id)
+                .order_by(PromptVersion.version.desc())
+                .first()
+            )
+            next_num = (latest_num.version + 1) if latest_num else 1
             db.query(PromptVersion).filter(
                 PromptVersion.template_id == template.id,
                 PromptVersion.is_active.is_(True),
             ).update({"is_active": False})
             version = PromptVersion(
                 template_id=template.id,
-                version=seed["version"],
-                content=content,
+                version=next_num,
+                content=file_content,
                 model_hint=seed["model_hint"],
                 temperature_hint=seed["temperature_hint"],
                 is_active=True,

@@ -187,6 +187,21 @@ def submit_quiz_attempt(
     if quiz is None:
         raise AppError("Quiz not found", 404, "quiz_not_found")
 
+    prior = (
+        db.query(QuizAttempt)
+        .filter(
+            QuizAttempt.quiz_id == quiz_id,
+            QuizAttempt.employee_user_id == employee_user_id,
+        )
+        .first()
+    )
+    if prior is not None:
+        raise AppError(
+            "You have already attempted this quiz; only one attempt is allowed.",
+            409,
+            "quiz_already_attempted",
+        )
+
     questions = (
         db.query(QuizQuestion)
         .filter(QuizQuestion.quiz_id == quiz_id)
@@ -255,6 +270,21 @@ def submit_assessment_attempt(
     assessment = db.query(Assessment).filter(Assessment.id == assessment_id).first()
     if assessment is None:
         raise AppError("Assessment not found", 404, "assessment_not_found")
+
+    prior = (
+        db.query(AssessmentAttempt)
+        .filter(
+            AssessmentAttempt.assessment_id == assessment_id,
+            AssessmentAttempt.employee_user_id == employee_user_id,
+        )
+        .first()
+    )
+    if prior is not None:
+        raise AppError(
+            "You have already submitted this assessment; only one submission is allowed.",
+            409,
+            "assessment_already_attempted",
+        )
 
     rubrics = (
         db.query(AssessmentRubric)

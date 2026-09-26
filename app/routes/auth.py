@@ -4,14 +4,18 @@ from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.exceptions import AppError
 from app.core.security import (
     REFRESH_COOKIE,
     clear_auth_cookies,
+    hash_password,
     set_auth_cookies,
+    verify_password,
 )
 from app.database.connection import get_db
 from app.models.user import User
 from app.schemas.auth import AuthUser, LoginRequest, RegisterRequest
+from app.schemas.user import PasswordChangeRequest
 from app.services import audit_service, auth_service
 
 
@@ -100,3 +104,24 @@ def logout(
 @router.get("/me", response_model=AuthUser)
 def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.post("/change-password")
+def change_password(
+    payload: PasswordChangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise AppError("Current password is incorrect", 401, "invalid_current_password")
+    if payload.new_password == payload.current_password:
+        raise AppError("New password must differ from current password", 400, "same_password")
+    current_user.password_hash = hash_password(payload.new_password)
+    auth_service.revoke_all_refresh_for_user(db, current_user.id)
+    audit_service.record(
+        db, current_user.id, "user.change_password", "user", current_user.id,
+        ip_address=_client_ip(request),
+    )
+    db.commit()
+    return {"detail": "password_changed"}

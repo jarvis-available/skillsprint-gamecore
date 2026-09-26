@@ -37,8 +37,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return await call_next(request)
-        if any(request.url.path.startswith(p) for p in self.exempt):
+        path = request.url.path
+        if path in self.exempt:
             return await call_next(request)
+        for p in self.exempt:
+            if p.endswith("/*") and path.startswith(p[:-1]):
+                return await call_next(request)
+        return await self._check(request, call_next)
+
+    async def _check(self, request, call_next):
 
         key = self._key(request)
         now = time.time()

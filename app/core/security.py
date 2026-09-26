@@ -79,7 +79,7 @@ def set_auth_cookies(response: Response, access: str, refresh: str) -> None:
     common = {
         "httponly": True,
         "secure": settings.COOKIE_SECURE,
-        "samesite": "strict",
+        "samesite": settings.COOKIE_SAMESITE,
     }
     if settings.COOKIE_DOMAIN:
         common["domain"] = settings.COOKIE_DOMAIN
@@ -101,7 +101,7 @@ def set_auth_cookies(response: Response, access: str, refresh: str) -> None:
 
 
 def clear_auth_cookies(response: Response) -> None:
-    common = {"httponly": True, "secure": settings.COOKIE_SECURE, "samesite": "strict"}
+    common = {"httponly": True, "secure": settings.COOKIE_SECURE, "samesite": settings.COOKIE_SAMESITE}
     if settings.COOKIE_DOMAIN:
         common["domain"] = settings.COOKIE_DOMAIN
     response.delete_cookie(ACCESS_COOKIE, path="/", **common)

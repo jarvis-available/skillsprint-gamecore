@@ -25,7 +25,7 @@ from app.schemas.document import (
     DocumentOut,
     DocumentVersionOut,
 )
-from app.services import audit_service, document_service
+from app.services import audit_service, document_intake, document_service
 
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -72,6 +72,26 @@ def list_documents(
     }
 
 
+@router.post("/preview")
+async def preview_document(
+    file: UploadFile = File(...),
+    _: User = Depends(require_admin_or_manager),
+):
+    """Parse the uploaded file and return auto-detected metadata (doc_code, name,
+    doc_type, department, description, version_label) plus a meaningfulness/adversarial
+    summary. Frontend calls this before the actual upload to auto-fill fields.
+    Nothing is persisted."""
+    data = await file.read()
+    mime_type = file.content_type or ""
+    inspection = document_intake.inspect(mime_type, data, file.filename)
+    return {
+        "filename": file.filename,
+        "mime_type": mime_type,
+        "size_bytes": len(data),
+        **inspection,
+    }
+
+
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_document(
     request: Request,
@@ -85,6 +105,7 @@ async def upload_document(
     version_label: Optional[str] = Form(default=None),
     effective_date: Optional[str] = Form(default=None),
     expiry_date: Optional[str] = Form(default=None),
+    override_type_mismatch: bool = Form(default=False),
     db: Session = Depends(get_db),
     current: User = Depends(require_admin_or_manager),
 ):
@@ -108,6 +129,7 @@ async def upload_document(
         mime_type=file.content_type or "",
         data=data,
         uploaded_by=current.id,
+        override_type_mismatch=override_type_mismatch,
     )
 
     audit_service.record(

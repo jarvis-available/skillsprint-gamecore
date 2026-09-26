@@ -256,6 +256,31 @@ def submit_assessment_attempt(
     return attempt
 
 
+@router.get("/assessments/{assessment_id}/attempts")
+def list_assessment_attempts(
+    assessment_id: int,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    from app.models.assessment import Assessment
+    from app.models.attempt import AssessmentAttempt
+
+    assessment = db.query(Assessment).filter(Assessment.id == assessment_id).first()
+    if assessment is None:
+        raise AppError("Assessment not found", 404, "assessment_not_found")
+    plan = _plan_owner(db, assessment.plan_id, current)
+    rows = (
+        db.query(AssessmentAttempt)
+        .filter(
+            AssessmentAttempt.assessment_id == assessment_id,
+            AssessmentAttempt.employee_user_id == plan.employee_user_id,
+        )
+        .order_by(AssessmentAttempt.submitted_at.desc())
+        .all()
+    )
+    return {"items": [AssessmentAttemptOut.model_validate(a) for a in rows]}
+
+
 @router.get("/plans/{plan_id}/progress", response_model=PlanProgressSummary)
 def get_progress(
     plan_id: int,

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     COOKIE_SECURE: bool = False
     COOKIE_DOMAIN: str = ""
+    COOKIE_SAMESITE: str = "lax"
 
     CORS_ORIGINS: str = "http://localhost:5173"
 

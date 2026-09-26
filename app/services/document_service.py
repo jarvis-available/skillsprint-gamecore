@@ -12,7 +12,7 @@ from app.core.injection_detector import detect_injection_flags, flags_to_string
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.document_version import DocumentVersion
-from app.services import document_chunker, document_parser
+from app.services import document_chunker, document_intake, document_parser
 
 
 def _validate_upload(filename: str, mime_type: str, size_bytes: int) -> str:
@@ -96,6 +96,7 @@ def upload_document(
     mime_type: str,
     data: bytes,
     uploaded_by: Optional[int],
+    override_type_mismatch: bool = False,
 ) -> Tuple[Document, DocumentVersion]:
     ext = _validate_upload(filename, mime_type, len(data))
     sha = _sha256(data)
@@ -107,6 +108,48 @@ def upload_document(
         raise AppError(
             "Identical file already uploaded", 409, "duplicate_content"
         )
+
+    inspection = document_intake.inspect(mime_type, data, filename)
+    if not inspection.get("parseable"):
+        raise AppError(
+            f"Could not read text from the file: {inspection.get('reason') or 'unknown parser error'}",
+            400,
+            "unreadable_file",
+        )
+    if not inspection.get("meaningful"):
+        raise AppError(
+            "The uploaded file has no meaningful text content (empty or below minimum length).",
+            400,
+            "empty_content",
+        )
+
+    detection = inspection.get("detection") or {}
+    if not override_type_mismatch:
+        warning = document_intake.validate_declared_type(doc_type, detection)
+        if warning:
+            raise AppError(warning, 409, "doc_type_mismatch")
+
+        try:
+            parsed_for_check = document_parser.parse(mime_type, data)
+            sample = "\n".join(
+                (s.get("content") or "") for s in parsed_for_check["sections"]
+            )
+        except Exception:
+            sample = ""
+
+        if sample:
+            existing_doc_id = None
+            existing_doc = db.query(Document).filter(Document.doc_code == doc_code).first()
+            if existing_doc:
+                existing_doc_id = existing_doc.id
+
+            dup_warn = document_intake.check_near_duplicate(db, sample, exclude_document_id=existing_doc_id)
+            if dup_warn:
+                raise AppError(dup_warn["message"], 409, "near_duplicate")
+
+            corpus_warn = document_intake.check_corpus_relatedness(db, sample[:5000])
+            if corpus_warn:
+                raise AppError(corpus_warn["message"], 409, "corpus_unrelated")
 
     document = db.query(Document).filter(Document.doc_code == doc_code).first()
     if document is None:
