@@ -76,18 +76,35 @@ def list_documents(
 async def preview_document(
     file: UploadFile = File(...),
     _: User = Depends(require_admin_or_manager),
+    db: Session = Depends(get_db),
 ):
     """Parse the uploaded file and return auto-detected metadata (doc_code, name,
-    doc_type, department, description, version_label) plus a meaningfulness/adversarial
-    summary. Frontend calls this before the actual upload to auto-fill fields.
+    doc_type, department, description, version_label) plus meaningfulness/adversarial
+    summary and a corpus-relatedness warning if the content looks off-topic. Frontend
+    calls this before the actual upload to auto-fill fields and surface warnings.
     Nothing is persisted."""
     data = await file.read()
     mime_type = file.content_type or ""
     inspection = document_intake.inspect(mime_type, data, file.filename)
+
+    corpus_warning = None
+    if inspection.get("meaningful"):
+        try:
+            from app.services import document_parser
+            parsed = document_parser.parse(mime_type, data)
+            sample = "\n".join(
+                (s.get("content") or "") for s in parsed["sections"]
+            )
+            if sample:
+                corpus_warning = document_intake.check_corpus_relatedness(db, sample[:5000])
+        except Exception:
+            corpus_warning = None
+
     return {
         "filename": file.filename,
         "mime_type": mime_type,
         "size_bytes": len(data),
+        "corpus_warning": corpus_warning,
         **inspection,
     }
 
@@ -106,6 +123,7 @@ async def upload_document(
     effective_date: Optional[str] = Form(default=None),
     expiry_date: Optional[str] = Form(default=None),
     override_type_mismatch: bool = Form(default=False),
+    override_corpus_unrelated: bool = Form(default=False),
     db: Session = Depends(get_db),
     current: User = Depends(require_admin_or_manager),
 ):
@@ -130,6 +148,7 @@ async def upload_document(
         data=data,
         uploaded_by=current.id,
         override_type_mismatch=override_type_mismatch,
+        override_corpus_unrelated=override_corpus_unrelated,
     )
 
     audit_service.record(

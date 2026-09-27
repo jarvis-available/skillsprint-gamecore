@@ -293,10 +293,12 @@ def check_corpus_relatedness(db: Session, sample_text: str) -> Optional[dict]:
             "score": round(best, 4),
             "threshold": CORPUS_RELATEDNESS_MIN,
             "message": (
-                "The uploaded content appears unrelated to any document already in the "
-                "corpus (top similarity {:.3f} < {:.2f}). This looks like off-topic or "
-                "placeholder content. Upload a real company document, or re-upload with "
-                "override_type_mismatch=true if you are certain."
+                "The uploaded document appears unrelated to the existing corpus "
+                "(topical similarity {:.1%}, below the {:.0%} guidance threshold). "
+                "This can indicate off-topic content, a document intended for a "
+                "different organisation, or a legitimately new subject area that "
+                "the corpus does not yet cover. Please review the file, and if "
+                "you are confident it belongs here, tick the override to proceed."
             ).format(best, CORPUS_RELATEDNESS_MIN),
         }
     return None

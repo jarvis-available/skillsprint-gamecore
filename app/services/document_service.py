@@ -97,6 +97,7 @@ def upload_document(
     data: bytes,
     uploaded_by: Optional[int],
     override_type_mismatch: bool = False,
+    override_corpus_unrelated: bool = False,
 ) -> Tuple[Document, DocumentVersion]:
     ext = _validate_upload(filename, mime_type, len(data))
     sha = _sha256(data)
@@ -105,9 +106,26 @@ def upload_document(
         db.query(DocumentVersion).filter(DocumentVersion.sha256 == sha).first()
     )
     if existing_version:
-        raise AppError(
-            "Identical file already uploaded", 409, "duplicate_content"
+        existing_doc = (
+            db.query(Document)
+            .filter(Document.id == existing_version.document_id)
+            .first()
         )
+        if existing_doc and not existing_doc.is_active:
+            msg = (
+                f"This exact file already exists on retired document "
+                f"'{existing_doc.doc_code}'. Reactivate that document from its "
+                f"details page, or upload an edited version (different content)."
+            )
+        elif existing_doc:
+            msg = (
+                f"This exact file was already uploaded as '{existing_doc.doc_code}' "
+                f"(version {existing_version.version_number}). Upload an edited "
+                f"version, or use the existing document."
+            )
+        else:
+            msg = "This exact file already exists in the corpus."
+        raise AppError(msg, 409, "duplicate_content")
 
     inspection = document_intake.inspect(mime_type, data, filename)
     if not inspection.get("parseable"):
@@ -129,24 +147,25 @@ def upload_document(
         if warning:
             raise AppError(warning, 409, "doc_type_mismatch")
 
-        try:
-            parsed_for_check = document_parser.parse(mime_type, data)
-            sample = "\n".join(
-                (s.get("content") or "") for s in parsed_for_check["sections"]
-            )
-        except Exception:
-            sample = ""
+    try:
+        parsed_for_check = document_parser.parse(mime_type, data)
+        sample = "\n".join(
+            (s.get("content") or "") for s in parsed_for_check["sections"]
+        )
+    except Exception:
+        sample = ""
 
-        if sample:
-            existing_doc_id = None
-            existing_doc = db.query(Document).filter(Document.doc_code == doc_code).first()
-            if existing_doc:
-                existing_doc_id = existing_doc.id
+    if sample:
+        existing_doc_id = None
+        existing_doc = db.query(Document).filter(Document.doc_code == doc_code).first()
+        if existing_doc:
+            existing_doc_id = existing_doc.id
 
-            dup_warn = document_intake.check_near_duplicate(db, sample, exclude_document_id=existing_doc_id)
-            if dup_warn:
-                raise AppError(dup_warn["message"], 409, "near_duplicate")
+        dup_warn = document_intake.check_near_duplicate(db, sample, exclude_document_id=existing_doc_id)
+        if dup_warn:
+            raise AppError(dup_warn["message"], 409, "near_duplicate")
 
+        if not override_corpus_unrelated:
             corpus_warn = document_intake.check_corpus_relatedness(db, sample[:5000])
             if corpus_warn:
                 raise AppError(corpus_warn["message"], 409, "corpus_unrelated")
