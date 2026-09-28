@@ -127,7 +127,23 @@ PLAN_STATUSES = (
     "unsupported",
     "contradictory",
     "manual_review",
+    "released",
+    "in_progress",
+    "completed",
     "archived",
+)
+
+# Lifecycle stages that are visible to the employee.
+EMPLOYEE_VISIBLE_PLAN_STATUSES = ("released", "in_progress", "completed")
+
+# Lifecycle stages where admin can still release / regenerate / validate.
+PLAN_STATUS_RELEASABLE_FROM = (
+    "draft",
+    "ready",
+    "verified",
+    "verified_with_warning",
+    "partially_verified",
+    "manual_review",
 )
 
 QUESTION_TYPES = (

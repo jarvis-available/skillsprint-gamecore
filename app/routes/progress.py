@@ -19,7 +19,7 @@ from app.schemas.progress import (
     RecommendationOut,
     RecommendationUpdate,
 )
-from app.services import audit_service, progress_service
+from app.services import audit_service, plan_service, progress_service
 
 
 router = APIRouter(prefix="/api", tags=["progress"])
@@ -62,6 +62,8 @@ def set_module_completion(
     row = progress_service.upsert_module_completion(
         db, module_id, plan.employee_user_id, payload.status, payload.notes
     )
+    plan_service.mark_started(db, plan.id)
+    plan_service.mark_completed_if_done(db, plan.id)
     audit_service.record(
         db,
         current.id,
@@ -104,6 +106,8 @@ def set_task_completion(
         payload.completion_notes,
         payload.evidence_url,
     )
+    plan_service.mark_started(db, plan.id)
+    plan_service.mark_completed_if_done(db, plan.id)
     audit_service.record(
         db,
         current.id,
@@ -142,6 +146,8 @@ def toggle_checklist_item(
     row = progress_service.toggle_checklist_item(
         db, item_id, plan.employee_user_id, payload.checked
     )
+    plan_service.mark_started(db, plan.id)
+    plan_service.mark_completed_if_done(db, plan.id)
     audit_service.record(
         db,
         current.id,
@@ -179,6 +185,8 @@ def submit_quiz_attempt(
     attempt = progress_service.submit_quiz_attempt(
         db, quiz_id, plan.employee_user_id, answers
     )
+    plan_service.mark_started(db, plan.id)
+    plan_service.mark_completed_if_done(db, plan.id)
     audit_service.record(
         db,
         current.id,
@@ -226,12 +234,24 @@ def submit_assessment_attempt(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
+    """Assessment scoring — restricted to admin, training_manager, reviewer or
+    manager. The employee never scores themselves; a supervisor grades them
+    against the rubric criteria the AI composed at generation time."""
+    if current.system_role not in ("admin", "training_manager", "reviewer", "manager"):
+        raise AppError(
+            "Only supervisors can score assessments. Ask your manager to grade you.",
+            403,
+            "assessment_scoring_forbidden",
+        )
+
     from app.models.assessment import Assessment
 
     assessment = db.query(Assessment).filter(Assessment.id == assessment_id).first()
     if assessment is None:
         raise AppError("Assessment not found", 404, "assessment_not_found")
-    plan = _plan_owner(db, assessment.plan_id, current)
+    plan = db.query(OnboardingPlan).filter(OnboardingPlan.id == assessment.plan_id).first()
+    if plan is None:
+        raise AppError("Plan not found", 404, "plan_not_found")
 
     scores = [s.model_dump() for s in payload.rubric_scores]
     attempt = progress_service.submit_assessment_attempt(
@@ -242,6 +262,7 @@ def submit_assessment_attempt(
         payload.notes,
         current.id,
     )
+    plan_service.mark_completed_if_done(db, plan.id)
     audit_service.record(
         db,
         current.id,
@@ -290,6 +311,74 @@ def get_progress(
     plan = _plan_owner(db, plan_id, current)
     data = progress_service.compute_progress(db, plan_id, plan.employee_user_id)
     return PlanProgressSummary.model_validate(data)
+
+
+@router.get("/plans/{plan_id}/progress-detail")
+def get_progress_detail(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """Per-item completion state for the plan's owner. Used by the employee
+    onboarding timeline to render a status pill next to each module, task and
+    assessment."""
+    from app.models.attempt import AssessmentAttempt, QuizAttempt
+    from app.models.progress import ModuleCompletion, TaskCompletion
+
+    plan = _plan_owner(db, plan_id, current)
+    summary = progress_service.compute_progress(db, plan_id, plan.employee_user_id)
+
+    module_ids = [m.id for m in plan.__dict__.get("modules", []) or []]
+    # Use the DB directly for portability across ORM eager-load choices.
+    module_completions = (
+        db.query(ModuleCompletion)
+        .filter(ModuleCompletion.employee_user_id == plan.employee_user_id)
+        .all()
+    )
+    task_completions = (
+        db.query(TaskCompletion)
+        .filter(TaskCompletion.employee_user_id == plan.employee_user_id)
+        .all()
+    )
+    quiz_attempts = (
+        db.query(QuizAttempt)
+        .filter(QuizAttempt.employee_user_id == plan.employee_user_id)
+        .all()
+    )
+    assessment_attempts = (
+        db.query(AssessmentAttempt)
+        .filter(AssessmentAttempt.employee_user_id == plan.employee_user_id)
+        .all()
+    )
+    return {
+        "overall_percent": summary["overall_percentage"],
+        "modules_completed": summary["modules_completed"],
+        "modules_total": summary["modules_total"],
+        "tasks_completed": summary["tasks_completed"],
+        "tasks_total": summary["tasks_total"],
+        "quizzes_attempted": summary["quizzes_attempted"],
+        "quizzes_total": summary["quizzes_total"],
+        "assessments_attempted": summary["assessments_attempted"],
+        "assessments_total": summary["assessments_total"],
+        "module_completions": [
+            {"module_id": c.module_id, "status": c.status} for c in module_completions
+        ],
+        "task_completions": [
+            {"task_id": c.task_id, "status": c.status} for c in task_completions
+        ],
+        "quiz_attempts": [
+            {"quiz_id": a.quiz_id, "percentage": a.percentage, "passed": a.passed}
+            for a in quiz_attempts
+        ],
+        "assessment_attempts": [
+            {
+                "assessment_id": a.assessment_id,
+                "percentage": a.percentage,
+                "passed": a.passed,
+            }
+            for a in assessment_attempts
+        ],
+    }
 
 
 @router.post("/plans/{plan_id}/recommendations/generate")

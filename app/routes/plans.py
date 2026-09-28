@@ -28,7 +28,8 @@ def list_plans(
     job_role_id: Optional[int] = None,
     status_filter: Optional[str] = Query(default=None, alias="status"),
 ):
-    if current.system_role not in ("admin", "training_manager", "reviewer"):
+    is_admin = current.system_role in ("admin", "training_manager", "reviewer")
+    if not is_admin:
         employee_user_id = current.id
 
     items, total = plan_service.list_plans(
@@ -39,6 +40,13 @@ def list_plans(
         job_role_id=job_role_id,
         status=status_filter,
     )
+
+    # Employees only see plans that have been explicitly released to them.
+    if not is_admin:
+        from app.core.constants import EMPLOYEE_VISIBLE_PLAN_STATUSES
+        items = [p for p in items if p.get("status") in EMPLOYEE_VISIBLE_PLAN_STATUSES]
+        total = len(items)
+
     return {"total": total, "items": items}
 
 
@@ -80,7 +88,34 @@ def get_plan(
     if current.system_role not in ("admin", "training_manager", "reviewer"):
         if detail["employee_user_id"] != current.id:
             raise AppError("Not authorized to view this plan", 403, "plan_forbidden")
+        from app.core.constants import EMPLOYEE_VISIBLE_PLAN_STATUSES
+        if detail["status"] not in EMPLOYEE_VISIBLE_PLAN_STATUSES:
+            raise AppError(
+                "This plan has not been released yet.",
+                403,
+                "plan_not_released",
+            )
     return PlanDetail.model_validate(detail)
+
+
+@router.post("/{plan_id}/release", response_model=PlanDetail)
+def release_plan(
+    plan_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_admin_or_manager),
+):
+    plan = plan_service.release_plan(db, plan_id)
+    audit_service.record(
+        db,
+        current.id,
+        "plan.release",
+        "onboarding_plan",
+        plan_id,
+        ip_address=_client_ip(request),
+    )
+    db.commit()
+    return PlanDetail.model_validate(plan_service.get_plan_detail(db, plan.id))
 
 
 @router.delete("/{plan_id}")

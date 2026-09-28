@@ -361,3 +361,127 @@ def archive_plan(db: Session, plan_id: int) -> OnboardingPlan:
     plan.status = "archived"
     db.flush()
     return plan
+
+
+def release_plan(db: Session, plan_id: int) -> OnboardingPlan:
+    """Admin explicitly releases a validated plan to the employee. Only allowed
+    when the plan has been validated at least once with an acceptable status."""
+    from app.core.constants import PLAN_STATUS_RELEASABLE_FROM
+    from app.models.validation import ValidationRun
+
+    plan = db.query(OnboardingPlan).filter(OnboardingPlan.id == plan_id).first()
+    if plan is None:
+        raise AppError("Plan not found", 404, "plan_not_found")
+    if plan.status in ("released", "in_progress", "completed"):
+        raise AppError("Plan is already released", 409, "plan_already_released")
+    if plan.status == "archived":
+        raise AppError("Cannot release an archived plan", 409, "plan_archived")
+    if plan.status not in PLAN_STATUS_RELEASABLE_FROM:
+        raise AppError(
+            f"Plan cannot be released from status '{plan.status}'. Validate it first.",
+            409,
+            "plan_not_releasable",
+        )
+
+    latest_run = (
+        db.query(ValidationRun)
+        .filter(ValidationRun.plan_id == plan_id)
+        .order_by(ValidationRun.created_at.desc())
+        .first()
+    )
+    if latest_run is None:
+        raise AppError(
+            "Plan must be validated before it can be released to the employee.",
+            409,
+            "validation_missing",
+        )
+    if latest_run.final_status in ("incomplete", "unsupported", "contradictory"):
+        raise AppError(
+            f"Plan's latest validation status is '{latest_run.final_status}'. "
+            f"Regenerate or resolve findings before releasing.",
+            409,
+            "validation_blocking",
+        )
+
+    plan.status = "released"
+    db.flush()
+    return plan
+
+
+def mark_started(db: Session, plan_id: int) -> None:
+    """Called on first employee activity (module/task/quiz)."""
+    plan = db.query(OnboardingPlan).filter(OnboardingPlan.id == plan_id).first()
+    if plan is None:
+        return
+    if plan.status == "released":
+        plan.status = "in_progress"
+        db.flush()
+
+
+def mark_completed_if_done(db: Session, plan_id: int) -> None:
+    """When every mandatory module has a completion record and every assessment
+    has an attempt, mark the plan completed."""
+    from app.models.assessment import Assessment
+    from app.models.attempt import AssessmentAttempt, QuizAttempt
+    from app.models.learning_module import LearningModule
+    from app.models.progress import ModuleCompletion
+    from app.models.quiz import Quiz
+
+    plan = db.query(OnboardingPlan).filter(OnboardingPlan.id == plan_id).first()
+    if plan is None or plan.status not in ("in_progress", "released"):
+        return
+
+    mandatory_modules = (
+        db.query(LearningModule.id)
+        .filter(LearningModule.plan_id == plan_id, LearningModule.is_mandatory.is_(True))
+        .all()
+    )
+    if not mandatory_modules:
+        return
+    mandatory_ids = {m.id for m in mandatory_modules}
+
+    completed_ids = {
+        c.module_id
+        for c in db.query(ModuleCompletion)
+        .filter(
+            ModuleCompletion.module_id.in_(mandatory_ids),
+            ModuleCompletion.employee_user_id == plan.employee_user_id,
+            ModuleCompletion.status == "completed",
+        )
+        .all()
+    }
+    if completed_ids != mandatory_ids:
+        return
+
+    quiz_ids = [q.id for q in db.query(Quiz.id).filter(Quiz.plan_id == plan_id).all()]
+    if quiz_ids:
+        attempted_quiz_ids = {
+            a.quiz_id
+            for a in db.query(QuizAttempt)
+            .filter(
+                QuizAttempt.quiz_id.in_(quiz_ids),
+                QuizAttempt.employee_user_id == plan.employee_user_id,
+            )
+            .all()
+        }
+        if set(quiz_ids) != attempted_quiz_ids:
+            return
+
+    assessment_ids = [
+        a.id for a in db.query(Assessment.id).filter(Assessment.plan_id == plan_id).all()
+    ]
+    if assessment_ids:
+        attempted_assessment_ids = {
+            a.assessment_id
+            for a in db.query(AssessmentAttempt)
+            .filter(
+                AssessmentAttempt.assessment_id.in_(assessment_ids),
+                AssessmentAttempt.employee_user_id == plan.employee_user_id,
+            )
+            .all()
+        }
+        if set(assessment_ids) != attempted_assessment_ids:
+            return
+
+    plan.status = "completed"
+    db.flush()

@@ -910,7 +910,8 @@ def validate_plan(
             }
         )
 
-        plan.status = run.final_status
+        if plan.status not in ("released", "in_progress", "completed", "archived"):
+            plan.status = run.final_status
     except Exception as exc:
         run.status = "failed"
         run.error_message = str(exc)[:2000]
